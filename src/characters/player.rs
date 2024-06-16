@@ -3,24 +3,112 @@ use std::any::type_name;
 use bevy::prelude::*;
 use bevy_spritesheet_animation::prelude::*;
 use leafwing_input_manager::{orientation::Rotation, prelude::*};
-use seldom_state::{prelude::*, trigger::TriggerOut};
+use seldom_state::prelude::*;
 use serde::{Deserialize, Serialize};
 
-
-#[derive(Component)]
+#[derive(Default, Component)]
 pub enum PlayerType {
-    Adventurer
+    #[default]
+    Adventurer,
 }
 
-
-pub struct PlayerBundle{
-    pub player_type:PlayerType,
-    pub player_marker:Player
+#[derive(Bundle)]
+pub struct PlayerBundle {
+    pub player_type: PlayerType,
+    pub player_marker: Player,
+    pub sprite_sheet: SpriteSheetBundle,
+    pub input_manager: InputManagerBundle<Action>,
+    pub state_machine: StateMachine,
+    pub direction: Direction,
+    pub toward: Toward,
+    pub spritesheet_animation: SpritesheetAnimation,
+    pub animation_ids: PlayerAnimationIds,
 }
 
+impl PlayerBundle {
+    pub fn new_player(
+        asset_server: &Res<AssetServer>,
+        library: &mut ResMut<SpritesheetLibrary>,
+        texture_atlas_layouts: &mut ResMut<Assets<TextureAtlasLayout>>,
+        player_type: PlayerType,
+        default_toward: Toward,
+        translation: Vec3,
+    ) -> Self {
+        match player_type {
+            PlayerType::Adventurer => {
+                let player_image = asset_server.load("sprites/characters/player.png");
 
+                let altas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
+                    Vec2::new(48., 48.),
+                    6,
+                    10,
+                    None,
+                    None,
+                ));
 
+                let animation = init_player_animation(library);
 
+                PlayerBundle {
+                    player_type: PlayerType::Adventurer,
+                    sprite_sheet: SpriteSheetBundle {
+                        texture: player_image,
+                        atlas: TextureAtlas {
+                            layout: altas_layout,
+                            index: 0,
+                        },
+                        transform: Transform {
+                            translation,
+                            scale: Vec3::new(2., 2., 0.),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    input_manager: InputManagerBundle {
+                        input_map: InputMap::default()
+                            .insert(Action::Move, VirtualDPad::arrow_keys())
+                            .insert(Action::Move, VirtualDPad::wasd())
+                            .insert(Action::Attack, KeyCode::KeyJ)
+                            .build(),
+                        ..default()
+                    },
+                    state_machine: StateMachine::default()
+                        .trans_builder(attack(Action::Attack), |_: &Direction, toward| {
+                            Some(Attack { toward })
+                        })
+                        .trans_builder(attacked, |_: &Attack, toward| {
+                            Some(match toward {
+                                Toward::Up => Direction::UP,
+                                Toward::Down => Direction::DOWN,
+                                Toward::Left => Direction::LEFT,
+                                Toward::Right => Direction::RIGHT,
+                            })
+                        })
+                        .trans_builder(
+                            axis_pair(
+                                Action::Move,
+                                0.0..f32::INFINITY,
+                                Rotation::NORTH..Rotation::NORTH,
+                            ),
+                            |_: &Direction, axis_pair| {
+                                Some(Direction {
+                                    val: Vec3 {
+                                        x: axis_pair.x(),
+                                        y: axis_pair.y(),
+                                        z: 0.,
+                                    },
+                                })
+                            },
+                        ),
+                    direction: Direction::from_toward(&default_toward),
+                    toward: default_toward,
+                    spritesheet_animation: SpritesheetAnimation::from_id(animation.idle.up),
+                    animation_ids: animation,
+                    player_marker: Player,
+                }
+            }
+        }
+    }
+}
 
 #[derive(Default, Component)]
 pub struct Player;
@@ -30,7 +118,6 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(InputManagerPlugin::<Action>::default())
-            .add_systems(PreStartup, setup)
             .add_systems(Update, (walk, player_animation))
             .register_type::<Action>()
             .register_type::<Direction>()
@@ -39,13 +126,14 @@ impl Plugin for PlayerPlugin {
 }
 
 #[derive(Actionlike, Clone, Eq, Hash, PartialEq, Reflect)]
-enum Action {
+pub enum Action {
     Move,
     Attack,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize, Reflect, Component)]
-enum Toward {
+#[derive(Default, Debug, Copy, Clone, PartialEq, Deserialize, Serialize, Reflect, Component)]
+pub enum Toward {
+    #[default]
     Up,
     Down,
     Left,
@@ -54,8 +142,14 @@ enum Toward {
 
 #[derive(Clone, Copy, Component, Reflect)]
 #[component(storage = "SparseSet")]
-struct Direction {
+pub struct Direction {
     val: Vec3,
+}
+
+impl Default for Direction {
+    fn default() -> Self {
+        Self::ZERO
+    }
 }
 
 impl Direction {
@@ -90,6 +184,17 @@ impl Direction {
             val: Vec3::new(x, y, z),
         }
     }
+
+    #[inline(always)]
+    #[must_use]
+    pub const fn from_toward(toward: &Toward) -> Self {
+        match toward {
+            Toward::Up => Direction::UP,
+            Toward::Down => Direction::DOWN,
+            Toward::Left => Direction::LEFT,
+            Toward::Right => Direction::RIGHT,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Component, Reflect)]
@@ -99,7 +204,7 @@ struct Attack {
 }
 
 #[derive(Component)]
-struct PlayerAnimationIds {
+pub struct PlayerAnimationIds {
     idle: Animation2dIds,
     run: Animation2dIds,
     attack: Animation2dIds,
@@ -217,75 +322,6 @@ fn init_player_animation(library: &mut ResMut<SpritesheetLibrary>) -> PlayerAnim
     }
 }
 
-fn setup(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    mut library: ResMut<SpritesheetLibrary>,
-    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
-) {
-    let player_image = asset_server.load("sprites/characters/player.png");
-
-    let altas_layout = texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
-        Vec2::new(48., 48.),
-        6,
-        10,
-        None,
-        None,
-    ));
-
-    let animation = init_player_animation(&mut library);
-
-    commands.spawn((
-        SpriteSheetBundle {
-            texture: player_image,
-            atlas: TextureAtlas {
-                layout: altas_layout,
-                index: 0,
-            },
-            transform: Transform::from_xyz(100., 100., 0.),
-            ..Default::default()
-        },
-        // From `leafwing-input-manager`
-        InputManagerBundle {
-            input_map: InputMap::default()
-                .insert(Action::Move, VirtualDPad::arrow_keys())
-                .insert(Action::Move, VirtualDPad::wasd())
-                .insert(Action::Attack, KeyCode::KeyJ)
-                .build(),
-            ..default()
-        },
-        StateMachine::default()
-            .trans_builder(attack(Action::Attack), |_: &Direction, toward| {
-                Some(Attack { toward })
-            })
-            .trans_builder(attacked, |_: &Attack, toward| Some(match toward {
-                Toward::Up => Direction::UP,
-                Toward::Down => Direction::DOWN,
-                Toward::Left => Direction::LEFT,
-                Toward::Right => Direction::RIGHT,
-            }))
-            .trans_builder(
-                axis_pair(
-                    Action::Move,
-                    0.0..f32::INFINITY,
-                    Rotation::NORTH..Rotation::NORTH,
-                ),
-                |_: &Direction, axis_pair| {
-                    Some(Direction {
-                        val: Vec3 {
-                            x: axis_pair.x(),
-                            y: axis_pair.y(),
-                            z: 0.,
-                        },
-                    })
-                },
-            ),
-        Direction::ZERO,
-        Toward::Down,
-        SpritesheetAnimation::from_id(animation.idle.up),
-        animation,
-    ));
-}
 
 fn attack<A: Actionlike>(action: A) -> impl Trigger<Out = Result<Toward, ()>> {
     (move |In(entity): In<Entity>, actors: Query<(&ActionState<A>, &Toward)>| {
@@ -359,20 +395,20 @@ fn player_animation(
             }
             if direction.y > 0. && direction.x == 0. && animation.animation_id != ids.run.up {
                 *toward = Toward::Up;
-                animation.animation_id = ids.run.up
+                animation.animation_id = ids.run.up;
             }
             if direction.y < 0. && direction.x == 0. && animation.animation_id != ids.run.down {
                 *toward = Toward::Down;
-                animation.animation_id = ids.run.down
+                animation.animation_id = ids.run.down;
             }
             if direction.y == 0. && direction.x > 0. && animation.animation_id != ids.run.right {
                 *toward = Toward::Right;
-                animation.animation_id = ids.run.right
+                animation.animation_id = ids.run.right;
             }
             if direction.y == 0. && direction.x < 0. && animation.animation_id != ids.run.left {
                 *toward = Toward::Left;
                 sprite.flip_x = true;
-                animation.animation_id = ids.run.left
+                animation.animation_id = ids.run.left;
             }
             if direction.y == 0.
                 && direction.x == 0.
@@ -382,14 +418,14 @@ fn player_animation(
                 && animation.animation_id != ids.idle.right
             {
                 if animation.animation_id == ids.run.up {
-                    animation.animation_id = ids.idle.up
+                    animation.animation_id = ids.idle.up;
                 } else if animation.animation_id == ids.run.down {
-                    animation.animation_id = ids.idle.down
+                    animation.animation_id = ids.idle.down;
                 } else if animation.animation_id == ids.run.left {
                     sprite.flip_x = true;
-                    animation.animation_id = ids.idle.left
+                    animation.animation_id = ids.idle.left;
                 } else {
-                    animation.animation_id = ids.idle.right
+                    animation.animation_id = ids.idle.right;
                 }
             }
         }
@@ -397,22 +433,22 @@ fn player_animation(
             match *toward {
                 Toward::Up => {
                     if animation.animation_id != ids.attack.up {
-                        animation.animation_id = ids.attack.up
+                        animation.animation_id = ids.attack.up;
                     }
                 }
                 Toward::Down => {
                     if animation.animation_id != ids.attack.down {
-                        animation.animation_id = ids.attack.down
+                        animation.animation_id = ids.attack.down;
                     }
                 }
                 Toward::Left => {
                     if animation.animation_id != ids.attack.left {
-                        animation.animation_id = ids.attack.left
+                        animation.animation_id = ids.attack.left;
                     }
                 }
                 Toward::Right => {
                     if animation.animation_id != ids.attack.right {
-                        animation.animation_id = ids.attack.right
+                        animation.animation_id = ids.attack.right;
                     }
                 }
             }
