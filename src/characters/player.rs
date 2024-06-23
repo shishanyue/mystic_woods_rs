@@ -1,4 +1,4 @@
-use bevy::{ecs::system::EntityCommands, prelude::*};
+use bevy::prelude::*;
 use bevy_rapier2d::prelude::*;
 use bevy_spritesheet_animation::prelude::*;
 use leafwing_input_manager::{orientation::Rotation, prelude::*};
@@ -6,9 +6,9 @@ use seldom_state::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::any::type_name;
 
-use super::{CharacterAction, CharacterCollider, CharacterColliderEntity};
+use super::CharacterAction;
 
-#[derive(Default, Component)]
+#[derive(Default, Component, Clone, Copy)]
 pub enum PlayerType {
     #[default]
     Adventurer,
@@ -26,7 +26,9 @@ pub struct PlayerBundle {
     pub toward: Toward,
     pub spritesheet_animation: SpritesheetAnimation,
     pub animation_ids: PlayerAnimationIds,
-    pub character_collider_entity: CharacterColliderEntity,
+    pub rigid_body: RigidBody,
+    pub controller: KinematicCharacterController,
+    pub velocity:Velocity
 }
 
 pub fn create_player(
@@ -38,26 +40,23 @@ pub fn create_player(
     default_toward: Toward,
     translation: Vec3,
 ) -> Entity {
-    let character_collider_entity = commands
-        .spawn(CharacterCollider {
-            collider: Collider::cuboid(8., 10.),
-            transform: TransformBundle::from(Transform::from_xyz(0.0, -8.0, 0.0)),
-        })
-        .id();
-
-    let mut player = commands.spawn(PlayerBundle::new(
-        asset_server,
-        library,
-        texture_atlas_layouts,
-        player_type,
-        default_toward,
-        translation,
-        character_collider_entity,
-    ));
-
-    player.insert_children(0, &[character_collider_entity]);
-
-    player.id()
+    commands
+        .spawn(PlayerBundle::new(
+            asset_server,
+            library,
+            texture_atlas_layouts,
+            player_type,
+            default_toward,
+            translation,
+        ))
+        .with_children(|player| match player_type {
+            PlayerType::Adventurer => {
+                player
+                    .spawn(Collider::cuboid(8., 10.))
+                    .insert(TransformBundle::from(Transform::from_xyz(0., -8., 0.)));
+            }
+        }).insert(KinematicCharacterControllerOutput::default())
+        .id()
 }
 
 impl PlayerBundle {
@@ -68,7 +67,6 @@ impl PlayerBundle {
         player_type: PlayerType,
         default_toward: Toward,
         translation: Vec3,
-        character_collider_entity: Entity,
     ) -> Self {
         match player_type {
             PlayerType::Adventurer => {
@@ -134,9 +132,9 @@ impl PlayerBundle {
                     spritesheet_animation: SpritesheetAnimation::from_id(animation.idle.up),
                     animation_ids: animation,
                     player_marker: Player,
-                    character_collider_entity: CharacterColliderEntity::new(
-                        character_collider_entity,
-                    ),
+                    rigid_body: RigidBody::KinematicPositionBased,
+                    controller: KinematicCharacterController::default(),
+                    velocity:Velocity { linvel: Vec2::new(2., 3.), angvel: 0. }
                 }
             }
         }
@@ -151,7 +149,7 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(InputManagerPlugin::<CharacterAction>::default())
-            .add_systems(Update, (walk, player_animation))
+            .add_systems(Update, (walk,read_result_system, player_animation))
             .register_type::<CharacterAction>()
             .register_type::<Direction>()
             .register_type::<Toward>();
@@ -371,15 +369,25 @@ fn attack<A: Actionlike>(action: A) -> impl Trigger<Out = Result<Toward, ()>> {
 
 const PLAYER_SPEED: f32 = 200.;
 
-fn walk(mut groundeds: Query<(&mut Transform, &Direction)>, time: Res<Time>) {
-    for (mut transform, direction) in &mut groundeds {
-        transform.translation += Vec3 {
+fn walk(mut groundeds: Query<(&mut KinematicCharacterController, &Direction)>, time: Res<Time>) {
+    for (mut controller , direction) in &mut groundeds {
+        controller.translation = Some(Vec2 {
             x: direction.val.x * time.delta_seconds() * PLAYER_SPEED,
             y: direction.val.y * time.delta_seconds() * PLAYER_SPEED,
-            z: 0.,
-        };
+        });
     }
 }
+
+
+fn read_result_system(controllers: Query<(Entity, &KinematicCharacterControllerOutput)>) {
+    for (entity, output) in controllers.iter() {
+        println!(
+            "Entity {:?} moved by {:?} and touches the ground: {:?}",
+            entity, output.effective_translation, output.grounded
+        );
+    }
+}
+
 fn attacked(
     In(entity): In<Entity>,
     mut events: EventReader<AnimationEvent>,

@@ -19,19 +19,3 @@ impl Plugin for CharactersPlugin {
         app.add_plugins(PlayerPlugin);
     }
 }
-#[derive(Bundle)]
-pub struct CharacterCollider {
-    pub collider: Collider,
-    pub transform: TransformBundle,
-}
-
-#[derive(Component)]
-pub struct CharacterColliderEntity {
-    pub entity: Entity,
-}
-
-impl CharacterColliderEntity {
-    pub fn new(entity: Entity) -> Self {
-        Self { entity }
-    }
-}
