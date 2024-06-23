@@ -1,10 +1,12 @@
-use std::any::type_name;
-
-use bevy::prelude::*;
+use bevy::{ecs::system::EntityCommands, prelude::*};
+use bevy_rapier2d::prelude::*;
 use bevy_spritesheet_animation::prelude::*;
 use leafwing_input_manager::{orientation::Rotation, prelude::*};
 use seldom_state::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::any::type_name;
+
+use super::{CharacterAction, CharacterCollider, CharacterColliderEntity};
 
 #[derive(Default, Component)]
 pub enum PlayerType {
@@ -14,25 +16,59 @@ pub enum PlayerType {
 
 #[derive(Bundle)]
 pub struct PlayerBundle {
+    pub player_name: Name,
     pub player_type: PlayerType,
     pub player_marker: Player,
     pub sprite_sheet: SpriteSheetBundle,
-    pub input_manager: InputManagerBundle<Action>,
+    pub input_manager: InputManagerBundle<CharacterAction>,
     pub state_machine: StateMachine,
     pub direction: Direction,
     pub toward: Toward,
     pub spritesheet_animation: SpritesheetAnimation,
     pub animation_ids: PlayerAnimationIds,
+    pub character_collider_entity: CharacterColliderEntity,
+}
+
+pub fn create_player(
+    commands: &mut Commands,
+    asset_server: &Res<AssetServer>,
+    library: &mut ResMut<SpritesheetLibrary>,
+    texture_atlas_layouts: &mut ResMut<Assets<TextureAtlasLayout>>,
+    player_type: PlayerType,
+    default_toward: Toward,
+    translation: Vec3,
+) -> Entity {
+    let character_collider_entity = commands
+        .spawn(CharacterCollider {
+            collider: Collider::cuboid(8., 10.),
+            transform: TransformBundle::from(Transform::from_xyz(0.0, -8.0, 0.0)),
+        })
+        .id();
+
+    let mut player = commands.spawn(PlayerBundle::new(
+        asset_server,
+        library,
+        texture_atlas_layouts,
+        player_type,
+        default_toward,
+        translation,
+        character_collider_entity,
+    ));
+
+    player.insert_children(0, &[character_collider_entity]);
+
+    player.id()
 }
 
 impl PlayerBundle {
-    pub fn new_player(
+    pub fn new(
         asset_server: &Res<AssetServer>,
         library: &mut ResMut<SpritesheetLibrary>,
         texture_atlas_layouts: &mut ResMut<Assets<TextureAtlasLayout>>,
         player_type: PlayerType,
         default_toward: Toward,
         translation: Vec3,
+        character_collider_entity: Entity,
     ) -> Self {
         match player_type {
             PlayerType::Adventurer => {
@@ -49,6 +85,7 @@ impl PlayerBundle {
                 let animation = init_player_animation(library);
 
                 PlayerBundle {
+                    player_name: Name::new("Player"),
                     player_type: PlayerType::Adventurer,
                     sprite_sheet: SpriteSheetBundle {
                         texture: player_image,
@@ -65,27 +102,20 @@ impl PlayerBundle {
                     },
                     input_manager: InputManagerBundle {
                         input_map: InputMap::default()
-                            .insert(Action::Move, VirtualDPad::arrow_keys())
-                            .insert(Action::Move, VirtualDPad::wasd())
-                            .insert(Action::Attack, KeyCode::KeyJ)
+                            .insert(CharacterAction::Move, VirtualDPad::arrow_keys())
+                            .insert(CharacterAction::Move, VirtualDPad::wasd())
+                            .insert(CharacterAction::Attack, KeyCode::KeyJ)
                             .build(),
                         ..default()
                     },
                     state_machine: StateMachine::default()
-                        .trans_builder(attack(Action::Attack), |_: &Direction, toward| {
+                        .trans_builder(attack(CharacterAction::Attack), |_: &Direction, toward| {
                             Some(Attack { toward })
                         })
-                        .trans_builder(attacked, |_: &Attack, toward| {
-                            Some(match toward {
-                                Toward::Up => Direction::UP,
-                                Toward::Down => Direction::DOWN,
-                                Toward::Left => Direction::LEFT,
-                                Toward::Right => Direction::RIGHT,
-                            })
-                        })
+                        .trans::<Attack, _>(attacked, Direction::ZERO)
                         .trans_builder(
                             axis_pair(
-                                Action::Move,
+                                CharacterAction::Move,
                                 0.0..f32::INFINITY,
                                 Rotation::NORTH..Rotation::NORTH,
                             ),
@@ -104,6 +134,9 @@ impl PlayerBundle {
                     spritesheet_animation: SpritesheetAnimation::from_id(animation.idle.up),
                     animation_ids: animation,
                     player_marker: Player,
+                    character_collider_entity: CharacterColliderEntity::new(
+                        character_collider_entity,
+                    ),
                 }
             }
         }
@@ -117,18 +150,12 @@ pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(InputManagerPlugin::<Action>::default())
+        app.add_plugins(InputManagerPlugin::<CharacterAction>::default())
             .add_systems(Update, (walk, player_animation))
-            .register_type::<Action>()
+            .register_type::<CharacterAction>()
             .register_type::<Direction>()
             .register_type::<Toward>();
     }
-}
-
-#[derive(Actionlike, Clone, Eq, Hash, PartialEq, Reflect)]
-pub enum Action {
-    Move,
-    Attack,
 }
 
 #[derive(Default, Debug, Copy, Clone, PartialEq, Deserialize, Serialize, Reflect, Component)]
@@ -283,15 +310,17 @@ impl Animation2dIds {
 }
 
 fn init_player_animation(library: &mut ResMut<SpritesheetLibrary>) -> PlayerAnimationIds {
+    use bevy_spritesheet_animation::clip::AnimationClip;
     let clips_builder = |columns, rows, play_row, play_column_range| {
-        move |clip: &mut bevy_spritesheet_animation::clip::AnimationClip| match play_column_range {
+        move |clip: &mut AnimationClip| match play_column_range {
             Some(range) => {
                 clip.push_frame_indices(
                     Spritesheet::new(columns, rows).row_partial(play_row, range),
                 );
             }
             None => {
-                clip.push_frame_indices(Spritesheet::new(columns, rows).row(play_row));
+                clip.push_frame_indices(Spritesheet::new(columns, rows).row(play_row))
+                    .set_default_duration(AnimationDuration::PerCycle(1500));
             }
         }
     };
@@ -321,7 +350,6 @@ fn init_player_animation(library: &mut ResMut<SpritesheetLibrary>) -> PlayerAnim
         ),
     }
 }
-
 
 fn attack<A: Actionlike>(action: A) -> impl Trigger<Out = Result<Toward, ()>> {
     (move |In(entity): In<Entity>, actors: Query<(&ActionState<A>, &Toward)>| {
@@ -355,9 +383,9 @@ fn walk(mut groundeds: Query<(&mut Transform, &Direction)>, time: Res<Time>) {
 fn attacked(
     In(entity): In<Entity>,
     mut events: EventReader<AnimationEvent>,
-    player_attacked: Query<(&PlayerAnimationIds, &SpritesheetAnimation, &Toward), With<Attack>>,
-) -> Option<Toward> {
-    let (ids, animation, toward) = player_attacked.get(entity).unwrap();
+    player_attacked: Query<(&PlayerAnimationIds, &SpritesheetAnimation), With<Attack>>,
+) -> bool {
+    let (ids, animation) = player_attacked.get(entity).unwrap();
 
     for event in events.read() {
         if let AnimationEvent::AnimationEnd { animation_id, .. } = event {
@@ -370,11 +398,11 @@ fn attacked(
                 || animation.animation_id == ids.attack.right)
                 && animation.animation_id == *animation_id
             {
-                return Some(*toward);
+                return true;
             }
         }
     }
-    None
+    false
 }
 
 fn player_animation(
@@ -390,7 +418,7 @@ fn player_animation(
     for (mut animation, ids, direction, attack, mut sprite, mut toward) in &mut players {
         if let Some(direction) = direction {
             let direction = direction.val;
-            if direction.x >= 0. && animation.animation_id != ids.idle.left {
+            if direction.x > 0. {
                 sprite.flip_x = false;
             }
             if direction.y > 0. && direction.x == 0. && animation.animation_id != ids.run.up {
@@ -417,15 +445,11 @@ fn player_animation(
                 && animation.animation_id != ids.idle.left
                 && animation.animation_id != ids.idle.right
             {
-                if animation.animation_id == ids.run.up {
-                    animation.animation_id = ids.idle.up;
-                } else if animation.animation_id == ids.run.down {
-                    animation.animation_id = ids.idle.down;
-                } else if animation.animation_id == ids.run.left {
-                    sprite.flip_x = true;
-                    animation.animation_id = ids.idle.left;
-                } else {
-                    animation.animation_id = ids.idle.right;
+                match *toward {
+                    Toward::Up => animation.animation_id = ids.idle.up,
+                    Toward::Down => animation.animation_id = ids.idle.down,
+                    Toward::Left => animation.animation_id = ids.idle.left,
+                    Toward::Right => animation.animation_id = ids.idle.right,
                 }
             }
         }

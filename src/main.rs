@@ -1,12 +1,11 @@
 use bevy::prelude::*;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
+use bevy_rapier2d::prelude::*;
 use bevy_spritesheet_animation::prelude::*;
 use characters::{
-    player::{PlayerBundle, PlayerType, Toward},
-    CharactersPlugin,
+    player::{create_player, PlayerType, Toward}, CharactersPlugin,
 };
 use seldom_state::StateMachinePlugin;
-
 pub mod characters;
 
 fn main() {
@@ -14,6 +13,8 @@ fn main() {
         .add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()))
         // Add the plugin to enable animations.
         // This makes the SpritesheetLibrary resource available to your systems.
+        .add_plugins(RapierPhysicsPlugin::<NoUserData>::pixels_per_meter(100.0))
+        .add_plugins(RapierDebugRenderPlugin::default())
         .add_plugins(SpritesheetAnimationPlugin)
         .add_plugins(StateMachinePlugin)
         .add_plugins(WorldInspectorPlugin::new())
@@ -29,12 +30,13 @@ fn setup(
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
     commands.spawn(Camera2dBundle::default());
-    commands.spawn(PlayerBundle::new_player(
+    create_player(
+        &mut commands,
         &asset_server,
         &mut library,
         &mut texture_atlas_layouts,
         PlayerType::Adventurer,
         Toward::Up,
         Vec3::new(100., 100., 0.),
-    ));
+    );
 }
