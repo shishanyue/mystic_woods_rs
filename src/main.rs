@@ -3,10 +3,11 @@ use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_rapier2d::prelude::*;
 use bevy_spritesheet_animation::prelude::*;
 use characters::{
-    player::{create_player, PlayerType, Toward}, CharactersPlugin,
+    player::{create_player, PlayerType}, CharactersPlugin, Toward,
 };
 use seldom_state::StateMachinePlugin;
 pub mod characters;
+pub mod state_machine;
 
 fn main() {
     App::new()
